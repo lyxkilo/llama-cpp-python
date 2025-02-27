@@ -116,6 +116,6 @@ jobs:
         with:
           files: dist/*
           # Set tag_name to <tag>-cu<cuda_version>
-          tag_name: ${{ env.TAG_VERSION }}-cu${{ env.CUDA_VERSION }}-win
+          tag_name: v${{ env.TAG_VERSION }}-cu${{ env.CUDA_VERSION }}-win
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
