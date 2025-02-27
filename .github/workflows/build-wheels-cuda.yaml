@@ -110,7 +110,8 @@ jobs:
           Write-Output "CUDA_VERSION=$cudaVersion" >> $env:GITHUB_ENV
           
           $wheel = (gi '.\dist\*.whl')[0]
-          Write-Output "TAG_VERSION=$wheel.split('-')[1]" >> $env:GITHUB_ENV
+          $tagVer = $wheel.name.split('-')[1]
+          Write-Output "TAG_VERSION=$tagVer" >> $env:GITHUB_ENV
 
       - uses: softprops/action-gh-release@v2
         with:
