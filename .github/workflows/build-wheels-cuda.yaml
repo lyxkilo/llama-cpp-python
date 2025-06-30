@@ -22,10 +22,10 @@ jobs:
         run: |
           $matrix = @{
               'os' = @('windows-2022')
-              'pyver' = @("3.9", "3.10", "3.11", "3.12")
-              'cuda' = @("12.6.3")
+              'pyver' = @("3.10")
+              'cuda' = @("12.8.1")
               'releasetag' = @("AVX2")
-              'cudaarch' = @("all")
+              'cudaarch' = @("89")
           }
 
           $matrixOut = ConvertTo-Json $matrix -Compress
