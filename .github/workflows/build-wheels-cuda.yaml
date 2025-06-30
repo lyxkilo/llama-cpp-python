@@ -67,6 +67,8 @@ jobs:
         id: cuda-toolkit
         with:
           cuda: "${{ matrix.cuda }}"
+          # 250630 temporary issue https://github.com/Jimver/cuda-toolkit/issues/395#issuecomment-2941579978
+          use-github-cache: false
 
       - name: Install the latest version of uv and set the python version
         uses: astral-sh/setup-uv@main
