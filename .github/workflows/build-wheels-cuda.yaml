@@ -77,7 +77,7 @@ jobs:
       - name: Install Dependencies
         run: |
           git config --system core.longpaths true
-          uv pip install --upgrade build setuptools wheel packaging
+          uv pip install --system --upgrade build setuptools wheel packaging
 
       - name: Build Wheel
         run: |
