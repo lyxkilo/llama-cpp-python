@@ -64,7 +64,7 @@ jobs:
       # from kingbri1/flash-attention build-wheels.yml
       - name: Install CUDA ${{ matrix.cuda }}
         uses: Jimver/cuda-toolkit@v0.2.24
-        # 250630 temporary issue https://github.com/Jimver/cuda-toolkit/issues/395#issuecomment-2941579978
+        # temporary issue https://github.com/Jimver/cuda-toolkit/issues/395#issuecomment-2941579978
         id: cuda-toolkit
         with:
           cuda: "${{ matrix.cuda }}"
@@ -74,6 +74,7 @@ jobs:
         with:
           python-version: ${{ matrix.pyver }}
           activate-environment: true
+          # https://github.com/astral-sh/setup-uv?tab=readme-ov-file#activate-environment
 
       - name: Install Dependencies
         run: |
