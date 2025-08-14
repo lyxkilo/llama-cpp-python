@@ -63,7 +63,7 @@ jobs:
       
       # from kingbri1/flash-attention build-wheels.yml
       - name: Install CUDA ${{ matrix.cuda }}
-        uses: Jimver/cuda-toolkit@v0.2.24
+        uses: lyxkilo/cuda-toolkit@master
         # temporary issue https://github.com/Jimver/cuda-toolkit/issues/395#issuecomment-2941579978
         id: cuda-toolkit
         with:
