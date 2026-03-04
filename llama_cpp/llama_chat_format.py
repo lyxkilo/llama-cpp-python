@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-import os
-import sys
-import json
+import base64
 import ctypes
 import dataclasses
 import datetime
+import json
+import os
 import random
 import string
+import sys
 
 from contextlib import ExitStack
 from typing import (
@@ -28,6 +29,9 @@ from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 import numpy as np
 import numpy.typing as npt
+
+import urllib.request
+from urllib.error import URLError, HTTPError
 
 import llama_cpp.llama_cpp as llama_cpp
 import llama_cpp.llama as llama
@@ -2900,16 +2904,22 @@ while also answering every question accurately, clearly, and step-by-step when a
                 raise ValueError(f"{self.log_prefix}(_init_mtmd_context): Failed to load mtmd context from: {self.clip_model_path}")
 
             # Check if vision is supported
-            if self._mtmd_cpp.mtmd_support_vision(self.mtmd_ctx):
+            self.is_support_vision = self._mtmd_cpp.mtmd_support_vision(self.mtmd_ctx)
+            if self.is_support_vision:
                 if self.verbose:
                     print(f"{self.log_prefix}(_init_mtmd_context): Vision support detected.", file=sys.stderr)
             else:
-                raise ValueError(f"{self.log_prefix}(_init_mtmd_context): Vision is not supported by this model")
+                if self.verbose:
+                    print(f"{self.log_prefix}(_init_mtmd_context): Vision is NOT supported by this mmproj model backend.", file=sys.stderr)
 
             # Check if audio is supported
-            if self._mtmd_cpp.mtmd_support_audio(self.mtmd_ctx):
+            self.is_support_audio = self._mtmd_cpp.mtmd_support_audio(self.mtmd_ctx)
+            if self.is_support_audio:
                 if self.verbose:
                     print(f"{self.log_prefix}(_init_mtmd_context): Audio support detected.", file=sys.stderr)
+            else:
+                if self.verbose:
+                    print(f"{self.log_prefix}(_init_mtmd_context): Audio is NOT supported by this mmproj model backend.", file=sys.stderr)
 
     def close(self) -> None:
         """Explicitly free the mtmd context and vision model resources."""
@@ -2929,6 +2939,72 @@ while also answering every question accurately, clearly, and step-by-step when a
 
     def __del__(self) -> None:
         self.close()
+
+    def _get_media_items(self, messages: List[llama_types.ChatCompletionRequestMessage]) -> List[Dict[str, str]]:
+        """
+        Extracts all media payloads (images, audio) sequentially to maintain exact chronological order.
+        Strictly enforces capability checks, raising exceptions if unsupported media is passed.
+
+        Returns:
+            media_items: A list of dictionaries containing the media 'url' and its 'type' (image or audio).
+        """
+        media_items: List[Dict[str, str]] = []
+        for message in messages:
+            if isinstance(message.get("content"), list):
+                for content in message["content"]:
+                    content_type = content.get("type", "")
+
+                    # 1. Vision Processing
+                    if content_type == "image_url":
+                        if not self.is_support_vision:
+                            raise ValueError(f"{self.log_prefix}: This mmproj model instance does not support image inputs.")
+
+                        url = content["image_url"] if isinstance(content["image_url"], str) else content["image_url"]["url"]
+                        media_items.append({"url": url, "type": "image"})
+
+                    # 2. Audio Processing
+                    elif content_type in ["audio_url", "input_audio"]:
+                        if not self.is_support_audio:
+                            raise ValueError(f"{self.log_prefix}: This mmproj model instance does not support audio inputs.")
+
+                        # Case A: Handle custom/forward-compatible audio_url format
+                        if content == "audio_url":
+                            url = content["audio_url"] if isinstance(content["audio_url"], str) else content["audio_url"]["url"]
+                            media_items.append({"url": url, "type": "audio"})
+                        # Case B: Handle OpenAI standard input_audio format
+                        else:
+                            input_audio = content.get("input_audio", {})
+                            if isinstance(input_audio, dict) and "data" in input_audio:
+                                # It might just be raw base64 data, we can format it as a data URI to reuse load_audio logic
+                                # input_audio: {
+                                #     data: audio.base64Data,
+                                #     format: audio.mimeType.includes('wav') ? 'wav' : 'mp3'
+                                # }
+                                audio_data = input_audio.get("data", "")
+                                audio_format = input_audio.get("format", "")
+
+                                # Strictly align with llama.cpp (require wav/mp3)
+                                if audio_format not in ["wav", "mp3"]:
+                                    raise ValueError(f"{self.log_prefix}: input_audio.format must be either 'wav' or 'mp3'")
+
+                                # Format as a Data URI to reuse the unified load_media logic
+                                media_items.append({
+                                    "url": f"data:audio/{audio_format};base64,{audio_data}",
+                                    "type": "audio"
+                                })
+                            else:
+                                # Just a raw base64 data
+                                url = input_audio if isinstance(input_audio, str) else ""
+                                if url:
+                                    media_items.append({"url": url, "type": "audio"})
+
+                    # 3. Text & Unknown Types
+                    elif content_type == "text":
+                        continue
+                    else:
+                        if self.verbose:
+                            print(f"{self.log_prefix}: Ignored unknown content type '{content_type}'.", file=sys.stderr)
+        return media_items
 
     def _create_bitmap_from_bytes(self, media_bytes: bytes):
         """
@@ -2992,7 +3068,7 @@ while also answering every question accurately, clearly, and step-by-step when a
         if system_prompt == "" and self.DEFAULT_SYSTEM_MESSAGE is not None:
             messages = [{"role": "system", "content": self.DEFAULT_SYSTEM_MESSAGE}] + messages
 
-        image_urls = self.get_image_urls(messages)
+        media_items = self._get_media_items(messages)
         media_marker = self.media_marker
 
         # 2. Render the chat template and replace actual URLs with C++ media markers
@@ -3004,31 +3080,31 @@ while also answering every question accurately, clearly, and step-by-step when a
             **getattr(self, 'extra_template_arguments', {})
         )
         # Replace image_url by media_marker in text
-        for url in image_urls:
-            text = text.replace(url, media_marker)
+        for item in media_items:
+            text = text.replace(item["url"], media_marker)
 
         if self.verbose:
-            print(f"{self.log_prefix}(_process_mtmd_prompt): Rendered prompt length: {len(text)} chars, Image count: {len(image_urls)}.", file=sys.stderr)
+            print(f"{self.log_prefix}(_process_mtmd_prompt): Rendered prompt length: {len(text)} chars, Media count: {len(media_items)}.", file=sys.stderr)
             print(f"{self.log_prefix}(_process_mtmd_prompt): Rendered prompt: {text}", file=sys.stderr)
 
         # 3. Pre-allocate bitmap array to guarantee chronological order during concurrent decoding
-        bitmaps = [None] * len(image_urls)
+        bitmaps = [None] * len(media_items)
         bitmap_cleanup = []
         chunks = None
 
         try:
             # Concurrent Media Decoding
             import concurrent.futures
-            if image_urls:
-                def _create_bitmap_func(idx: int, url: str):
-                    media_bytes = self.load_image(url)
+            if media_items:
+                def _create_bitmap_func(idx: int, item: str):
+                    media_bytes = self.load_media(item["url"], item["type"])
                     bitmap = self._create_bitmap_from_bytes(media_bytes)
                     return idx, bitmap
-                # This method uses multi-threaded parallel processing to convert images to bitmaps,
+                # This method uses multi-threaded parallel processing to convert images or audio to bitmaps,
                 # which can be used in the future to process large numbers of video frames.
-                max_workers = min(llama.n_threads, len(image_urls))
+                max_workers = min(llama.n_threads, len(media_items))
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = [executor.submit(_create_bitmap_func, i, url) for i, url in enumerate(image_urls)]
+                    futures = [executor.submit(_create_bitmap_func, i, item) for i, item in enumerate(media_items)]
 
                     for future in concurrent.futures.as_completed(futures):
                         idx, bitmap = future.result()
@@ -3040,7 +3116,7 @@ while also answering every question accurately, clearly, and step-by-step when a
                     raise RuntimeError(f"{self.log_prefix}(_create_bitmap_func): Failed to decode one or more media files.")
                 else:
                     if self.verbose:
-                        print(f"{self.log_prefix}(_create_bitmap_func with {max_workers} threads): {len(image_urls)} bitmaps were successfully created.")
+                        print(f"{self.log_prefix}(_create_bitmap_func with {max_workers} threads): {len(media_items)} bitmaps were successfully created.")
             else:
                 # If there are no images, set the bitmaps to empty.
                 bitmaps = []
@@ -3423,8 +3499,95 @@ while also answering every question accurately, clearly, and step-by-step when a
             )
         return _convert_completion_to_chat(completion_or_chunks, stream=stream)
 
-    def load_image(self, image_url: str) -> bytes:
-        return self._load_image(image_url)
+    def load_media(self, media_url: str, media_type: str) -> bytes:
+        """
+        Unified dispatcher for loading media payloads.
+        Routes the URL/URI to the specific image or audio processor based on the media_type.
+        """
+        if media_type == "image":
+            return self._load_image(media_url)
+        elif media_type == "audio":
+            audio_bytes = self._load_audio(media_url)
+            # Apply ironclad magic bytes validation before returning
+            try:
+                self.detect_audio_format(audio_bytes)
+            except ValueError as e:
+                raise ValueError(f"{self.log_prefix}(load_media): {e}")
+            return audio_bytes
+        else:
+            raise ValueError(f"{self.log_prefix}(load_media): Unknown media type '{media_type}'")
+
+    @staticmethod
+    def detect_audio_format(audio_bytes: bytes) -> str:
+        """
+        Pure utility function: Detects the audio format from magic bytes.
+        Strictly translated from llama.cpp's `is_audio_file` to ensure 100% compatibility
+        and avoid false positives (e.g., AVI files disguised as RIFF).
+        """
+        length = len(audio_bytes)
+
+        if length < 12:
+            raise ValueError("Audio data is corrupted or too small (less than 12 bytes).")
+
+        # RIFF & WAVE magic bytes verification
+        is_wav = audio_bytes.startswith(b"RIFF") and audio_bytes[8:12] == b"WAVE"
+
+        # ID3 metadata or MPEG sync word verification
+        is_mp3 = length >= 3 and (
+            audio_bytes.startswith(b"ID3") or
+            (audio_bytes[0] == 0xFF and (audio_bytes[1] & 0xE0) == 0xE0)
+        )
+
+        # FLAC magic bytes verification
+        is_flac = audio_bytes.startswith(b"fLaC")
+
+        if is_wav:
+            return "wav"
+        elif is_mp3:
+            return "mp3"
+        elif is_flac:
+            return "flac"
+        else:
+            raise ValueError(
+                "Unsupported audio format detected via magic bytes. "
+                "The underlying C++ miniaudio backend ONLY supports WAV, MP3, and FLAC."
+            )
+
+    @staticmethod
+    def _load_audio(audio_url: str) -> bytes:
+        """
+        Load audio from either a URL, local path, or a data URI and return raw bytes.
+        """
+
+        audio_bytes = b""
+
+        # 1. Handle data URI (base64)
+        if audio_url.strip().startswith("data:"):
+            comma_pos = audio_url.find(",")
+            if comma_pos == -1:
+                raise ValueError("Invalid data URI: missing comma separator")
+            base64_data = audio_url[comma_pos + 1 :]
+            audio_bytes = base64.b64decode(base64_data)
+
+        # 2. Handle local file path
+        elif os.path.exists(audio_url):
+            with open(audio_url, "rb") as f:
+                audio_bytes = f.read()
+
+        # 3. Handle remote URL via HTTP/HTTPS
+        else:
+            headers = {"User-Agent": "Mozilla/5.0"}
+            req = urllib.request.Request(audio_url, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=15) as f:
+                    audio_bytes = f.read()
+            except (URLError, HTTPError) as e:
+                raise ConnectionError(f"Failed to download audio from {audio_url}: {e}")
+
+        if not audio_bytes:
+            raise ValueError("Empty audio data received")
+
+        return audio_bytes
 
     @staticmethod
     def _load_image(image_url: str) -> bytes:
@@ -3444,7 +3607,6 @@ while also answering every question accurately, clearly, and step-by-step when a
 
         # 1. Handle data URI (base64)
         if image_url.strip().startswith("data:"):
-            import base64
             # Split only once from the right to correctly handle mime types containing commas
             comma_pos = image_url.find(",")
             if comma_pos == -1:
@@ -3454,9 +3616,6 @@ while also answering every question accurately, clearly, and step-by-step when a
 
         # 2. Handle local/remote URL
         else:
-            import urllib.request
-            from urllib.error import URLError, HTTPError
-
             headers = {"User-Agent": "Mozilla/5.0"}
             req = urllib.request.Request(image_url, headers=headers)
 
@@ -3505,50 +3664,6 @@ while also answering every question accurately, clearly, and step-by-step when a
         output = io.BytesIO()
         image.save(output, format="JPEG", quality=95, optimize=True, progressive=True)
         return output.getvalue()
-
-    @staticmethod
-    def get_image_urls(messages: List[llama_types.ChatCompletionRequestMessage]):
-        image_urls: List[str] = []
-        for message in messages:
-            if message["role"] == "user":
-                if message["content"] is None:
-                    continue
-                for content in message["content"]:
-                    if isinstance(content, dict) and "type" in content:
-                        if content["type"] == "image_url":
-                            if (
-                                isinstance(content["image_url"], dict)
-                                and "url" in content["image_url"]
-                            ):
-                                image_urls.append(content["image_url"]["url"])
-                            else:
-                                image_urls.append(content["image_url"])
-        return image_urls
-
-    @staticmethod
-    def split_text_on_image_urls(text: str, image_urls: List[str]):
-        """This method is no longer used in the new implementation."""
-        def find_first(s: str, substrs: List[str]):
-            for i, substr in enumerate(substrs):
-                pos = s.find(substr)
-                if pos != -1:
-                    return pos, i
-            return None, None
-
-        split_text: List[Tuple[Literal["text", "image_url"], str]] = []
-        remaining = text
-        while remaining:
-            # Find first image_url
-            pos, i = find_first(remaining, image_urls)
-            if pos is not None and i is not None:
-                if pos > 0:
-                    split_text.append(("text", remaining[:pos]))
-                split_text.append(("image_url", image_urls[i]))
-                remaining = remaining[pos + len(image_urls[i]) :]
-            else:
-                split_text.append(("text", remaining))
-                remaining = ""
-        return split_text
 
     @classmethod
     def from_pretrained(
