@@ -1306,7 +1306,27 @@ class Llama:
         try:
             while True:
                 if len(tokens) > 0:
-                    self.eval(tokens)
+                    # For hybrid models processing a prompt (len > 1), force an N-1 checkpoint
+                    # to safely allow 1-token rollbacks (e.g., for seed changes on 100% prompt matches).
+                    if self.is_hybrid and self._hybrid_cache_mgr is not None and len(tokens) > 1:
+                        body_tokens = tokens[:-1]
+                        last_token = [tokens[-1]]
+
+                        # 1. Evaluate up to N-1
+                        self.eval(body_tokens)
+
+                        # 2. Save the N-1 state snapshot
+                        current_history = self._input_ids[:self.n_tokens].tolist()
+                        self._hybrid_cache_mgr.save_checkpoint(
+                            current_pos=self.n_tokens,
+                            tokens=current_history,
+                            seq_id=0
+                        )
+                        # 3. Evaluate the final token to refresh logits
+                        self.eval(last_token)
+                    else:
+                        # Standard evaluation or single-token generation step
+                        self.eval(tokens)
                 while sample_idx < self.n_tokens:
                     token = self._sampling_ctx.sample(self._ctx, idx=-1)
                     self._sampling_ctx.accept(token, False if grammar is None else True)
