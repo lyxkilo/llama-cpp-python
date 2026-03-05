@@ -2868,65 +2868,63 @@ while also answering every question accurately, clearly, and step-by-step when a
         if self.mtmd_ctx is not None:
             return  # Already initialized
 
-        with suppress_stdout_stderr(disable=self.verbose):
-            self._mtmd_cpp.mtmd_helper_log_set(llama_log_callback, ctypes.c_void_p(0))
+        self._mtmd_cpp.mtmd_helper_log_set(llama_log_callback, ctypes.c_void_p(0))
 
-            # Get default parameters
-            self.mctx_params = self._mtmd_cpp.mtmd_context_params_default()
-            self.mctx_params.use_gpu = self.use_gpu
-            self.mctx_params.print_timings = self.verbose
-            self.mctx_params.n_threads = llama_model.n_threads
-            self.mctx_params.flash_attn_type  = self._mtmd_cpp.clip_flash_attn_type.CLIP_FLASH_ATTN_TYPE_AUTO
-            self.mctx_params.warmup = True
-            if self.image_min_tokens > 0:
-                self.mctx_params.image_min_tokens = self.image_min_tokens
-            if self.image_max_tokens > 0:
-                self.mctx_params.image_max_tokens = self.image_max_tokens
-            if (self.image_max_tokens < self.image_min_tokens) and self.image_max_tokens > 0:
-                raise ValueError(f"{self.log_prefix}(_init_mtmd_context): Configuration Error! image_max_tokens ({self.image_max_tokens}) "
-                                 f"cannot be less than image_min_tokens ({self.image_min_tokens}).")
+        # Get default parameters
+        self.mctx_params = self._mtmd_cpp.mtmd_context_params_default()
+        self.mctx_params.use_gpu = self.use_gpu
+        self.mctx_params.print_timings = self.verbose
+        self.mctx_params.n_threads = llama_model.n_threads
+        self.mctx_params.flash_attn_type  = self._mtmd_cpp.clip_flash_attn_type.CLIP_FLASH_ATTN_TYPE_AUTO
+        self.mctx_params.warmup = True
+        if self.image_min_tokens > 0:
+            self.mctx_params.image_min_tokens = self.image_min_tokens
+        if self.image_max_tokens > 0:
+            self.mctx_params.image_max_tokens = self.image_max_tokens
+        if (self.image_max_tokens < self.image_min_tokens) and self.image_max_tokens > 0:
+            raise ValueError(f"{self.log_prefix}(_init_mtmd_context): Configuration Error! image_max_tokens ({self.image_max_tokens}) "
+                                f"cannot be less than image_min_tokens ({self.image_min_tokens}).")
 
-            # Cache the model's eos token and bos token
-            self.mtmd_eos_token=llama_model.detokenize([llama_model.token_eos()]).decode('utf-8', errors='ignore')
-            self.mtmd_bos_token=llama_model.detokenize([llama_model.token_bos()]).decode('utf-8', errors='ignore')
+        # Cache the model's eos token and bos token
+        self.mtmd_eos_token=llama_model.detokenize([llama_model.token_eos()]).decode('utf-8', errors='ignore')
+        self.mtmd_bos_token=llama_model.detokenize([llama_model.token_bos()]).decode('utf-8', errors='ignore')
 
-            # Cache the mtmd_default_marker
-            self.media_marker = self._mtmd_cpp.mtmd_default_marker().decode('utf-8')
+        # Cache the mtmd_default_marker
+        self.media_marker = self._mtmd_cpp.mtmd_default_marker().decode('utf-8')
 
-            # Initialize mtmd context
-            self.mtmd_ctx = self._mtmd_cpp.mtmd_init_from_file(
-                self.clip_model_path.encode(),
-                llama_model.model,
-                self.mctx_params
-            )
+        # Initialize mtmd context
+        self.mtmd_ctx = self._mtmd_cpp.mtmd_init_from_file(
+            self.clip_model_path.encode(),
+            llama_model.model,
+            self.mctx_params
+        )
 
-            if self.mtmd_ctx is None:
-                raise ValueError(f"{self.log_prefix}(_init_mtmd_context): Failed to load mtmd context from: {self.clip_model_path}")
+        if self.mtmd_ctx is None:
+            raise ValueError(f"{self.log_prefix}(_init_mtmd_context): Failed to load mtmd context from: {self.clip_model_path}")
 
-            # Check if vision is supported
-            self.is_support_vision = self._mtmd_cpp.mtmd_support_vision(self.mtmd_ctx)
-            if self.is_support_vision:
-                if self.verbose:
-                    print(f"{self.log_prefix}(_init_mtmd_context): Vision support detected.", file=sys.stderr)
-            else:
-                if self.verbose:
-                    print(f"{self.log_prefix}(_init_mtmd_context): Vision is NOT supported by this mmproj model backend.", file=sys.stderr)
+        # Check if vision is supported
+        self.is_support_vision = self._mtmd_cpp.mtmd_support_vision(self.mtmd_ctx)
+        if self.is_support_vision:
+            if self.verbose:
+                print(f"{self.log_prefix}(_init_mtmd_context): Vision support detected.", file=sys.stderr)
+        else:
+            if self.verbose:
+                print(f"{self.log_prefix}(_init_mtmd_context): Vision is NOT supported by this mmproj model backend.", file=sys.stderr)
 
-            # Check if audio is supported
-            self.is_support_audio = self._mtmd_cpp.mtmd_support_audio(self.mtmd_ctx)
-            if self.is_support_audio:
-                if self.verbose:
-                    print(f"{self.log_prefix}(_init_mtmd_context): Audio support detected.", file=sys.stderr)
-            else:
-                if self.verbose:
-                    print(f"{self.log_prefix}(_init_mtmd_context): Audio is NOT supported by this mmproj model backend.", file=sys.stderr)
+        # Check if audio is supported
+        self.is_support_audio = self._mtmd_cpp.mtmd_support_audio(self.mtmd_ctx)
+        if self.is_support_audio:
+            if self.verbose:
+                print(f"{self.log_prefix}(_init_mtmd_context): Audio support detected.", file=sys.stderr)
+        else:
+            if self.verbose:
+                print(f"{self.log_prefix}(_init_mtmd_context): Audio is NOT supported by this mmproj model backend.", file=sys.stderr)
 
     def close(self) -> None:
         """Explicitly free the mtmd context and vision model resources."""
         if getattr(self, "mtmd_ctx", None) is not None:
             try:
-                with suppress_stdout_stderr(disable=getattr(self, "verbose", True)):
-                    self._mtmd_cpp.mtmd_free(self.mtmd_ctx)
+                self._mtmd_cpp.mtmd_free(self.mtmd_ctx)
             except Exception:
                 pass
             self.mtmd_ctx = None
@@ -3027,20 +3025,19 @@ while also answering every question accurately, clearly, and step-by-step when a
         if self.mtmd_ctx is None:
             raise ValueError(f"{self.log_prefix}(_create_bitmap_from_bytes): mtmd context not initialized.")
 
-        with suppress_stdout_stderr(disable=self.verbose):
-            # Create bitmap from buffer using helper function
-            bitmap = self._mtmd_cpp.mtmd_helper_bitmap_init_from_buf(
-                self.mtmd_ctx,
-                (ctypes.c_uint8 * len(media_bytes)).from_buffer(bytearray(media_bytes)),
-                len(media_bytes)
-            )
+        # Create bitmap from buffer using helper function
+        bitmap = self._mtmd_cpp.mtmd_helper_bitmap_init_from_buf(
+            self.mtmd_ctx,
+            (ctypes.c_uint8 * len(media_bytes)).from_buffer(bytearray(media_bytes)),
+            len(media_bytes)
+        )
 
-            if bitmap is None:
-                raise ValueError(f"{self.log_prefix}(_create_bitmap_from_bytes): "
-                                 "Failed to load image or audio file from media bytes "
-                                 "(unsupported media format or corrupted data).")
+        if bitmap is None:
+            raise ValueError(f"{self.log_prefix}(_create_bitmap_from_bytes): "
+                                "Failed to load image or audio file from media bytes "
+                                "(unsupported media format or corrupted data).")
 
-            return bitmap
+        return bitmap
 
 
     def _process_mtmd_prompt(
