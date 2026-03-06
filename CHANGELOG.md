@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.31] Omni-Modal Media Pipeline, Hybrid 1-Token Rollback and Enhanced Logging
+
+- refactor(mtmd): introduce omni-modal media pipeline with experimental audio support
+This commit significantly overhauls the media parsing and loading pipeline in `MTMDChatHandler` to gracefully handle both vision and audio inputs, establishing a true omni-modal architecture.
+
+    Key structural changes:
+    - Hardware Capability Sniffing: `_init_mtmd_context` now actively probes the C++ backend for `ctx_v` (vision) and `ctx_a` (audio) encoders, enabling proactive fail-fast validation before media processing.
+    - Unified Media Extraction: Replaced `get_image_urls` and `split_text_on_image_urls` with a robust `_get_media_items` method. This safely parses `image_url`, `input_audio`, and `audio_url` while strictly maintaining the chronological order of user prompts and enforcing OpenAI format specs.
+    - Media Dispatcher & Magic Bytes: Introduced a unified `load_media` dispatcher. Added a new `_load_audio` method and a rigorous `detect_audio_format` static method that accurately mimics `llama.cpp`'s C++ magic bytes sniffing (RIFF/WAVE, ID3/MPEG, fLaC) to prevent fatal backend crashes.
+    - Concurrent Omni-Decoding: The ThreadPoolExecutor in `_process_mtmd_prompt` has been upgraded to concurrently fetch and decode both image and audio payloads into unified `mtmd_bitmap` structures.
+
+    - **Note**: Audio processing capabilities in the underlying llama.cpp engine are currently in an experimental stage.
+
+- fix(hybrid): implement N-1 checkpointing to support 1-token rollbacks
+    - Forces an N-1 state snapshot during prompt prefilling for hybrid models. This ensures the engine can safely perform a 1-token rollback to refresh logits upon 100% cache matches (e.g., changing seeds on identical prompts), preventing RNN state desyncs and empty outputs.
+
+    - **Note**: For the Comfyui plugin developer, I recommend performing a reset operation before inputting the prompt word. This way, the seed will be included as one of the factors in the initial complete recalculation.
+
+- fix(mtmd): remove OS-level log suppression to expose critical C++ errors
+    - Removed the `suppress_stdout_stderr` context manager around critical C++ backend calls (`_init_mtmd_context`, `_create_bitmap_from_bytes`, and `close`).
+
+    - Previously, when `verbose=False`, this OS-level file descriptor redirection was swallowing fatal C++ backend errors (e.g., `stb_image` decoding failures, corrupted `.mmproj` model weights, or CUDA Out-Of-Memory aborts), resulting in silent crashes that were impossible to debug. The framework now correctly relies on the native C-API `llama_log_callback` to route logs to Python gracefully, ensuring that critical decoding and hardware exceptions remain visible to the developer.
+
+- feat: Update llama.cpp to [ggml-org/llama.cpp/commit/f5ddcd1696eca5069dc7915f4d4c03c9a709afea](https://github.com/ggml-org/llama.cpp/commit/f5ddcd1696eca5069dc7915f4d4c03c9a709afea)
+
 ## [0.3.30] Milestone Release
 
 I will update the release notes for version 0.3.30 in the [discussion](https://github.com/JamePeng/llama-cpp-python/discussions).
