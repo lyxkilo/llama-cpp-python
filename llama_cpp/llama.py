@@ -1170,59 +1170,91 @@ class Llama:
         original_tokens = list(tokens)
         # Check for kv cache prefix match
         if reset and self.n_tokens > 0:
-            longest_prefix = self.longest_token_prefix(self._input_ids, tokens[:-1])
-            if longest_prefix > 0:
+            # 1. First, check for a 100% exact match of the entire sequence
+            full_match_prefix = self.longest_token_prefix(self._input_ids, tokens)
+
+            # --- FAST PATH: Zero-latency bypass for Hybrid Single-Turn & Multimodal ---
+            # If the cache is disabled (max_checkpoints <= 0) and we have a 100% match,
+            # we completely skip the N-1 truncation. This ensures that multimodal handlers
+            # (which just finished evaluating and already hold fresh logits) don't trigger
+            # unnecessary N-1 rollbacks or catastrophic KV cache clears.
+            if (
+                full_match_prefix == len(tokens)
+                and full_match_prefix == self.n_tokens
+                and self.is_hybrid
+                and (self._hybrid_cache_mgr is None or self._hybrid_cache_mgr.max_checkpoints <= 0)
+            ):
                 reset = False
+                longest_prefix = len(tokens)
+                tokens = tokens[longest_prefix:] # Empties the tokens array to bypass evaluation
+                if self.verbose:
+                    print(f"Llama.generate: Hybrid single-turn full match ({longest_prefix} tokens). Bypassing rollback/truncation.", file=sys.stderr)
 
-                if longest_prefix == len(tokens):
-                    if self.verbose:
-                        print(f"Llama.generate: Full match. Forcing prefix-- to evaluate 1 token.", file=sys.stderr)
-                    longest_prefix -= 1
-
-                # Physically erase trailing "ghost" tokens from the C++ KV cache
-                # to prevent attention misalignment in multi-round chats.
-                if longest_prefix < self.n_tokens:
-                    if self.is_hybrid and self._hybrid_cache_mgr is not None:
-                        if self.verbose:
-                            print(f"Llama.generate: Hybrid model rollback triggered.", file=sys.stderr)
-
-                        best_ckpt = self._hybrid_cache_mgr.find_best_checkpoint(original_tokens, 0)
-                        if best_ckpt is not None and self._hybrid_cache_mgr.restore_checkpoint(best_ckpt, seq_id=0):
-                            actual_prefix = best_ckpt.pos
-                        else:
-                            actual_prefix = 0
-                            self._hybrid_cache_mgr.clear()
-                            self._ctx.memory_clear(True)
-
-                        self.n_tokens = actual_prefix
-                        tokens = original_tokens[actual_prefix:]
-                        if self.verbose:
-                            print(
-                                f"Llama.generate: {actual_prefix} prefix-match hit, "
-                                f"remaining {len(tokens)} prompt tokens to eval",
-                                file=sys.stderr,
-                            )
-                    else:
-                        if self.verbose:
-                            print(f"Llama.generate: Truncating KV cache size from {self.n_tokens} to {longest_prefix}", file=sys.stderr)
-                        self._ctx.memory_seq_rm(0, longest_prefix, -1)
-
-                        # Adjust the tokens array and cursor to reuse the matched cache
-                        self.n_tokens = longest_prefix
-                        tokens = tokens[longest_prefix:]
-
-                        if self.verbose:
-                            print(
-                                f"Llama.generate: {longest_prefix} prefix-match hit, "
-                                f"remaining {len(tokens)} prompt tokens to eval",
-                                file=sys.stderr,
-                            )
+            # --- STANDARD PATH: Force N-1 re-evaluation ---
             else:
-                # No prefix matched. Completely clear the KV cache to prevent context poisoning.
-                self.n_tokens = 0
-                self._ctx.memory_clear(True)
-                if self.is_hybrid and self._hybrid_cache_mgr is not None:
-                    self._hybrid_cache_mgr.clear()
+                # By matching against `tokens[:-1]`, we intentionally drop the last token.
+                # This forces the engine to re-evaluate the final token to refresh sampling logits.
+                longest_prefix = self.longest_token_prefix(self._input_ids, tokens[:-1])
+
+                if longest_prefix > 0:
+                    reset = False
+
+                    # Note: Kept for legacy compatibility. Triggers if the prefix matching
+                    # somehow equals the full token length (e.g., edge cases in tokenization).
+                    if longest_prefix == len(tokens):
+                        if self.is_hybrid and (self._hybrid_cache_mgr is None or self._hybrid_cache_mgr.max_checkpoints <= 0):
+                            if self.verbose:
+                                print(f"Llama.generate: Full match on disabled hybrid cache. Skipping prefix-- to use existing fresh logits.", file=sys.stderr)
+                        else:
+                            if self.verbose:
+                                print(f"Llama.generate: Full match. Forcing prefix-- to evaluate 1 token.", file=sys.stderr)
+                            longest_prefix -= 1
+
+                    # Physically erase trailing "ghost" tokens from the C++ KV cache
+                    # to prevent attention misalignment in multi-round chats.
+                    if longest_prefix < self.n_tokens:
+                        if self.is_hybrid and self._hybrid_cache_mgr is not None:
+                            if self.verbose:
+                                print(f"Llama.generate: Hybrid model rollback triggered.", file=sys.stderr)
+
+                            best_ckpt = self._hybrid_cache_mgr.find_best_checkpoint(original_tokens, 0)
+                            if best_ckpt is not None and self._hybrid_cache_mgr.restore_checkpoint(best_ckpt, seq_id=0):
+                                actual_prefix = best_ckpt.pos
+                            else:
+                                # Fallback: No checkpoint found, must fully clear the context to prevent poisoning
+                                actual_prefix = 0
+                                self._hybrid_cache_mgr.clear()
+                                self._ctx.memory_clear(True)
+
+                            self.n_tokens = actual_prefix
+                            tokens = original_tokens[actual_prefix:]
+                            if self.verbose:
+                                print(
+                                    f"Llama.generate: {actual_prefix} prefix-match hit, "
+                                    f"remaining {len(tokens)} prompt tokens to eval",
+                                    file=sys.stderr,
+                                )
+                        else:
+                            if self.verbose:
+                                print(f"Llama.generate: Truncating KV cache size from {self.n_tokens} to {longest_prefix}", file=sys.stderr)
+                            self._ctx.memory_seq_rm(0, longest_prefix, -1)
+
+                            # Adjust the tokens array and cursor to reuse the matched cache
+                            self.n_tokens = longest_prefix
+                            tokens = tokens[longest_prefix:]
+
+                            if self.verbose:
+                                print(
+                                    f"Llama.generate: {longest_prefix} prefix-match hit, "
+                                    f"remaining {len(tokens)} prompt tokens to eval",
+                                    file=sys.stderr,
+                                )
+        else:
+            # No prefix matched at all. Completely clear the KV cache to prevent context poisoning.
+            self.n_tokens = 0
+            self._ctx.memory_clear(True)
+            if self.is_hybrid and self._hybrid_cache_mgr is not None:
+                self._hybrid_cache_mgr.clear()
 
         # Reset mirostat sampling
         params = LlamaSamplingParams(

@@ -3271,15 +3271,20 @@ while also answering every question accurately, clearly, and step-by-step when a
 
             if longest_prefix < llama.n_tokens:
                 if llama.is_hybrid and llama._hybrid_cache_mgr is not None:
-                    if self.verbose:
-                        print(f"{self.log_prefix}(__call__): Hybrid prefix mismatch (matched {longest_prefix}/{llama.n_tokens}). "
-                              f"Searching for nearest checkpoint...", file=sys.stderr)
-
-                    best_ckpt = llama._hybrid_cache_mgr.find_best_checkpoint(full_prompt_ids, seq_id=0)
-                    if best_ckpt and llama._hybrid_cache_mgr.restore_checkpoint(best_ckpt, seq_id=0):
-                        llama.n_tokens = best_ckpt.pos
+                    if llama._hybrid_cache_mgr.max_checkpoints > 0:
                         if self.verbose:
-                            print(f"{self.log_prefix}(__call__): Successfully rolled back to checkpoint at pos {llama.n_tokens}.", file=sys.stderr)
+                            print(f"{self.log_prefix}(__call__): Hybrid prefix mismatch (matched {longest_prefix}/{llama.n_tokens}). "
+                                f"Searching for nearest checkpoint...", file=sys.stderr)
+
+                        best_ckpt = llama._hybrid_cache_mgr.find_best_checkpoint(full_prompt_ids, seq_id=0)
+                        if best_ckpt and llama._hybrid_cache_mgr.restore_checkpoint(best_ckpt, seq_id=0):
+                            llama.n_tokens = best_ckpt.pos
+                            if self.verbose:
+                                print(f"{self.log_prefix}(__call__): Successfully rolled back to checkpoint at pos {llama.n_tokens}.", file=sys.stderr)
+                        else:
+                            llama._hybrid_cache_mgr.clear()
+                            llama._ctx.memory_clear(True)
+                            llama.n_tokens = 0
                     else:
                         llama._hybrid_cache_mgr.clear()
                         llama._ctx.memory_clear(True)
@@ -3382,7 +3387,11 @@ while also answering every question accurately, clearly, and step-by-step when a
 
             # End-of-Turn Checkpoint
             # Anchors the state ONLY after the entire multi-modal turn is processed
-            if llama.is_hybrid and llama._hybrid_cache_mgr is not None:
+            if (
+                llama.is_hybrid
+                and llama._hybrid_cache_mgr is not None
+                and llama._hybrid_cache_mgr.max_checkpoints > 0
+            ):
                 if self.verbose:
                     print(f"{self.log_prefix}(__call__): [End-of-Turn Checkpoint] Anchoring full prompt state at pos {llama.n_tokens}.", file=sys.stderr)
 
