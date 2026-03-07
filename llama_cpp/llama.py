@@ -1396,7 +1396,11 @@ class Llama:
                             ]
                         )
         finally:
-            if self.is_hybrid and self._hybrid_cache_mgr is not None:
+            if (
+                self.is_hybrid
+                and self._hybrid_cache_mgr is not None
+                and self._hybrid_cache_mgr.max_checkpoints > 0
+            ):
                 current_history = self._input_ids[:self.n_tokens].tolist()
 
                 self._hybrid_cache_mgr.save_checkpoint(
