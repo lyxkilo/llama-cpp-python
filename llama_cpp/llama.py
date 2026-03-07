@@ -1308,7 +1308,13 @@ class Llama:
                 if len(tokens) > 0:
                     # For hybrid models processing a prompt (len > 1), force an N-1 checkpoint
                     # to safely allow 1-token rollbacks (e.g., for seed changes on 100% prompt matches).
-                    if self.is_hybrid and self._hybrid_cache_mgr is not None and len(tokens) > 1:
+                    # ONLY apply this if rollback capabilities are enabled (max_checkpoints > 0).
+                    if (
+                        self.is_hybrid
+                        and self._hybrid_cache_mgr is not None
+                        and self._hybrid_cache_mgr.max_checkpoints > 0
+                        and len(tokens) > 1
+                    ):
                         body_tokens = tokens[:-1]
                         last_token = [tokens[-1]]
 
