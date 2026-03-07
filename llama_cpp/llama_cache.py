@@ -336,7 +336,7 @@ class HybridCheckpointCache(BaseLlamaCache):
     """
     def __init__(self, ctx: llama_cpp.llama_context_p, max_checkpoints: int = 16, verbose: bool = False):
         if ctx is None:
-            raise ValueError("HybridCheckpointCache: Failed to create HybridCheckpointCache with model context")
+            raise ValueError("HybridCheckpointCache(__init__): Failed to create HybridCheckpointCache with model context")
         self._ctx = ctx
         self.max_checkpoints = max_checkpoints
         self.checkpoints: list[HybridCheckpoint] = []
@@ -350,6 +350,13 @@ class HybridCheckpointCache(BaseLlamaCache):
 
         self.verbose = verbose
 
+        if self.max_checkpoints <= 0:
+            if self.verbose:
+                import sys
+                print("HybridCheckpointCache(__init__): Cache is DISABLED (max_checkpoints <= 0). "
+                      "Rollback capabilities are turned off. This is optimal for single-turn workflows.",
+                      file=sys.stderr)
+
     @property
     def cache_size(self) -> int:
         """Returns the total memory used by all stored checkpoints in bytes."""
@@ -357,6 +364,9 @@ class HybridCheckpointCache(BaseLlamaCache):
 
     def clear(self):
         """Clears all stored checkpoints and resets memory tracking."""
+        if not self.checkpoints:
+            # Empty Checkpoint: Return immediately, no need to clear.
+            return
         self.checkpoints.clear()
         self._current_size = 0
         if self.verbose:
@@ -392,6 +402,10 @@ class HybridCheckpointCache(BaseLlamaCache):
         Finds the longest valid checkpoint that perfectly matches the provided token prefix.
         Returns None if no matching checkpoint is found.
         """
+        # Empty Checkpoint: Instant return, no hash calculation needed.
+        if self.max_checkpoints <= 0 or len(self.checkpoints) == 0:
+            return None
+
         best_cp = None
         best_pos = -1
         for cp in self.checkpoints:
@@ -417,27 +431,42 @@ class HybridCheckpointCache(BaseLlamaCache):
         Extracts the RNN hidden state from the C++ backend and saves it as a checkpoint.
         Manages eviction (FIFO) if the maximum number of checkpoints is exceeded.
         """
+
+        # 0. Early Exit / Feature Toggle
+        # If the user disables checkpoints (max_checkpoints <= 0), we immediately return.
+        # This absolutely critical bypass prevents massive (e.g., 150MB+) synchronous
+        # VRAM-to-RAM copies over the PCIe bus, eliminating multi-second delays at the
+        # end of generation for single-turn workflows.
+        # This is more friendly to the single-call ComfyUI ecosystem. :)
+        if self.max_checkpoints <= 0:
+            if self.verbose:
+                print("HybridCheckpointCache(save_checkpoint): Cache is DISABLED (max_checkpoints <= 0). "
+                      "Operating in single-turn conversation mode. Skipping state extraction to optimize generation latency.",
+                      file=sys.stderr)
+            return False
+
         flags = self._flag_partial
 
-        # 1. Query the required buffer size
+        # 1. Query the required buffer size from the underlying C++ context
         size = self._get_size_ext(self._ctx, seq_id, flags)
         if size == 0:
             if self.verbose:
-                print("HybridCheckpointCache: size=0, skip")
+                print("HybridCheckpointCache(save_checkpoint): size=0, skip")
             return False
 
-        # 2. Allocate buffer and extract data
+        # 2. Allocate buffer and extract raw state data
         buffer = (ctypes.c_uint8 * size)()
         n_written = self._get_data_ext(self._ctx, buffer, size, seq_id, flags)
         if n_written != size:
             if self.verbose:
-                print(f"HybridCheckpointCache: get failed {n_written}/{size}")
+                print(f"HybridCheckpointCache(save_checkpoint): get failed {n_written}/{size}")
             return False
 
+        # Note: This deep copy isolates the state from subsequent C++ backend mutations
         data_bytes = bytes(buffer[:n_written])
         hash_val = self._hash_prefix(tokens, current_pos)
 
-        # 3. Store the checkpoint
+        # 3. Store the newly extracted checkpoint
         self.checkpoints.append(HybridCheckpoint(
             pos=current_pos,
             data=data_bytes,
@@ -454,10 +483,10 @@ class HybridCheckpointCache(BaseLlamaCache):
             old_cp = self.checkpoints.pop(0)
             self._current_size -= old_cp.size
             if self.verbose:
-                print(f"HybridCheckpointCache: evicted pos={old_cp.pos}")
+                print(f"HybridCheckpointCache(save_checkpoint): evicted pos={old_cp.pos}")
 
         if self.verbose:
-            print(f"HybridCheckpointCache: Saved checkpoint at pos {current_pos} ({size / 1024 / 1024:.2f} MiB)  "
+            print(f"HybridCheckpointCache(save_checkpoint): Saved checkpoint at pos {current_pos} ({size / 1024 / 1024:.2f} MiB)  "
                   f"total={len(self.checkpoints)}  used={self._current_size / 1024 / 1024:.2f} MiB",
                   file=sys.stderr)
 
@@ -470,7 +499,7 @@ class HybridCheckpointCache(BaseLlamaCache):
         # 1. Verify sequence ID matches to prevent cross-sequence contamination
         if cp.seq_id != seq_id:
             if self.verbose:
-                print(f"HybridCheckpointCache: [Error] Sequence ID mismatch: checkpoint has {cp.seq_id}, requested {seq_id}", file=sys.stderr)
+                print(f"HybridCheckpointCache(restore_checkpoint): [Error] Sequence ID mismatch: checkpoint has {cp.seq_id}, requested {seq_id}", file=sys.stderr)
             return False
         flags = self._flag_partial
 
@@ -479,7 +508,7 @@ class HybridCheckpointCache(BaseLlamaCache):
         current_size = self._get_size_ext(self._ctx, seq_id, flags)
         if current_size != cp.size:
             if self.verbose:
-                print(f"HybridCheckpointCache: [Warning] State size mismatch before restore: expected {cp.size}, got {current_size} → possible invalidation")
+                print(f"HybridCheckpointCache(restore_checkpoint): [Warning] State size mismatch before restore: expected {cp.size}, got {current_size} -> possible invalidation")
             return False
 
         # 3. Copy data back to a ctypes buffer and push to the C++ backend
@@ -490,7 +519,7 @@ class HybridCheckpointCache(BaseLlamaCache):
         success = (ret == cp.size)
 
         if self.verbose:
-            print(f"HybridCheckpointCache: restore {'OK' if success else 'FAIL'} pos={cp.pos}")
+            print(f"HybridCheckpointCache(restore_checkpoint): restore {'OK' if success else 'FAIL'} pos={cp.pos}")
         return success
 
     # Disable BaseLlamaCache Dictionary Interfaces
