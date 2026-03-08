@@ -1019,6 +1019,7 @@ class Llama:
         grammar: Optional[LlamaGrammar] = None, # optional BNF-like grammar to constrain sampling
         grammar_lazy: bool = False,
         idx: Optional[int] = None,
+        seed: Optional[int] = None,
     ):
         """Sample a token from the model.
         Returns:
@@ -1040,6 +1041,7 @@ class Llama:
                 temp=temp,
                 top_n_sigma=top_n_sigma,
                 min_keep=min_keep,
+                seed=seed if seed is not None else self._seed,
 
                 # Dynamic Temp
                 dynatemp_range=dynatemp_range,
@@ -1146,7 +1148,8 @@ class Llama:
         logits_processor: Optional[LogitsProcessorList] = None,
         stopping_criteria: Optional[StoppingCriteriaList] = None,
         grammar: Optional[LlamaGrammar] = None,
-        grammar_lazy :bool = False,
+        grammar_lazy: bool = False,
+        seed: Optional[int] = None,
     ) -> Generator[int, Optional[Sequence[int]], None]:
         """Create a generator of tokens from a prompt.
 
@@ -1302,6 +1305,7 @@ class Llama:
             logit_bias=self._convert_logit_bias(logit_bias),
             grammar=grammar._grammar if grammar else "",
             grammar_lazy=grammar_lazy,
+            seed=seed if seed is not None else self._seed,
         )
 
         if logits_processor:
@@ -1635,7 +1639,6 @@ class Llama:
         dynatemp_exponent: float = 1.0,
         min_keep: int = 0,
         stream: bool = False,
-        seed: Optional[int] = None,
         mirostat_mode: int = 0,
         mirostat_tau: float = 5.0,
         mirostat_eta: float = 0.1,
@@ -1654,7 +1657,8 @@ class Llama:
         logit_bias: Optional[Dict[int, float]] = None,
         logits_processor: Optional[LogitsProcessorList] = None,
         grammar: Optional[LlamaGrammar] = None,
-        grammar_lazy: bool = False
+        grammar_lazy: bool = False,
+        seed: Optional[int] = None,
     ) -> Union[
         Iterator[CreateCompletionResponse], Iterator[CreateCompletionStreamResponse]
     ]:
@@ -1798,11 +1802,6 @@ class Llama:
                 if self.verbose:
                     print("Llama._create_completion: cache miss", file=sys.stderr)
 
-        if seed is not None:
-            self.set_seed(seed)
-        else:
-            self.set_seed(random.Random(self._seed).randint(0, 2 ** 32))
-
         finish_reason = "length"
         multibyte_fix = 0
         for token in self.generate(
@@ -1838,6 +1837,7 @@ class Llama:
             logits_processor=logits_processor,
             grammar=grammar,
             grammar_lazy=grammar_lazy,
+            seed=seed if seed is not None else self._seed,
         ):
             if llama_cpp.llama_token_is_eog(self._model.vocab, token):
                 text = self.detokenize(completion_tokens, prev_tokens=prompt_tokens)
