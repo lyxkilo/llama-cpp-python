@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.32] Hybrid/Multimodal Model Single-Turn Optimizations & Fix Sampling Seed
+
+- perf(hybrid): optimize multimodal single-turn and fix KV clear bug
+    - Added a 100% match "FAST PATH" in Llama.generate to bypass N-1 truncation for hybrid models when caching is disabled.
+    - Fixed a bug where failed rollbacks on disabled caches would wipe the KV cache, causing multimodal pseudo-token crashes.
+    - Updated MTMDChatHandler to suppress cache-related logs and anchoring logic when max_checkpoints <= 0.
+
+- perf(hybrid): prevent expensive array slicing when cache is disabled
+    - Added a `max_checkpoints > 0` check to the `finally` block of the generation loop.
+    - Previously, even though the underlying C++ state extraction was bypassed, the Python layer was still executing `self._input_ids[:self.n_tokens].tolist()`. For long contexts, slicing and converting this massive array to a Python list caused unnecessary CPU overhead and garbage collection (GC) pressure. This intercept acts as a double-layer isolation, ensuring absolute zero memory allocation and zero overhead for hybrid models running in single-turn mode.
+
+- perf(hybrid): bypass N-1 evaluation split if max_checkpoints is 0
+    - Prevent fragmenting the prompt evaluation into `len(tokens)-1` and `1` when hybrid caching is disabled.
+    - Allows the underlying C++ engine to process the entire prompt in a single, efficient batch for single-turn workflows.
+
+- perf(hybrid): eliminate PCIe I/O latency for single-turn workflows
+    - This commit introduces critical performance optimizations and log tracing improvements for HybridCheckpointCache in single-turn workflows (e.g., ComfyUI or single-turn conversation mode):
+        - Now support 0 HybridCheckpointCache for single-turn conversation.(set the `ctx_checkpoints=0` when llama init )
+        - Added early-exit intercepts for `max_checkpoints <= 0` in `save_checkpoint` and `find_best_checkpoint`. This prevents massive (e.g., 150MB+) synchronous VRAM-to-RAM state extractions over the PCIe bus when rollback capabilities are disabled, eliminating a ~3-second blocking delay at the end of generation.
+        - Added a non-empty check in `clear()` to prevent log spam when the cache is already empty or disabled.
+        - Standardized logging prefixes (e.g., `HybridCheckpointCache(save_checkpoint)`) for better observability.
+        - Fixed a potential `UnicodeEncodeError` hazard in warning logs by replacing a non-standard arrow character with standard ASCII (`->`).
+
+- fix(sampling): pass seed to sampling context and remove global mutation
+    - Add `seed` parameter to `generate` and `sample` method signatures.
+    - Pass the resolved seed directly to `LlamaSamplingParams` to ensure the underlying C++ sampler uses it.
+    - Remove thread-unsafe `self.set_seed()` calls in `_create_completion` to prevent global state pollution during concurrent requests.
+
+- docs(issue-template): modernize bug report for efficiency
+    - Completely revamped the legacy bug report template to streamline troubleshooting. Added an anti-AI-spam policy, a detailed OS/Hardware matrix, forced `verbose=True` logging requirements with code examples, and new sections for model parameters and AI-assisted brainstorming.
+
+- feat: Update llama.cpp to [ggml-org/llama.cpp/commit/b283f6d5b3d2d079019ae5ed3cbbdb4b3be03b25](https://github.com/ggml-org/llama.cpp/commit/b283f6d5b3d2d079019ae5ed3cbbdb4b3be03b25)
+
 ## [0.3.31] Omni-Modal Media Pipeline, Hybrid 1-Token Rollback and Enhanced Logging
 
 - refactor(mtmd): introduce omni-modal media pipeline with experimental audio support
