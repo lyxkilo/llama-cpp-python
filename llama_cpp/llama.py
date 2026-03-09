@@ -479,15 +479,22 @@ class Llama:
         _is_recurrent = self._model.is_recurrent()
         _is_hybrid = self._model.is_hybrid()
         _n_swa = self._model.n_swa()
+        # Sync llama.cpp upstream (#20291): warn swa-full is not supported for non-SWA models.
+        if _n_swa == 0:
+            if (self.context_params.swa_full):
+                self.context_params.swa_full = False
+                if self.verbose:
+                    print("Llama.__init__: swa_full is not supported by this model, it will be disabled", file=sys.stderr)
+
         # checkpoints are created only if:
         # - the model uses SWA and we are not using `swa_full`
         # - the model architecture is marked as recurrent or hybrid
-        self.is_hybrid = _is_recurrent or _is_hybrid or (_n_swa > 0 and not swa_full)
+        self.is_hybrid = _is_recurrent or _is_hybrid or (_n_swa > 0 and not self.context_params.swa_full)
 
         if self.is_hybrid:
             if self.verbose:
                 print(f"Llama.__init__: Hybrid/Recurrent model detected."
-                      f"(is_recurrent: {_is_recurrent}, is_hybrid: {_is_hybrid}, n_swa: {_n_swa}, swa_full: {swa_full}). "
+                      f"(is_recurrent: {_is_recurrent}, is_hybrid: {_is_hybrid}, n_swa: {_n_swa}, swa_full: {self.context_params.swa_full}). "
                       f" Enabling HybridCheckpointCache(ctx_checkpoints={ctx_checkpoints}, checkpoint_interval={checkpoint_interval}).",
                       file=sys.stderr)
             self.ctx_checkpoints = ctx_checkpoints
