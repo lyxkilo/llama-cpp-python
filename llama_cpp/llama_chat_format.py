@@ -33,8 +33,8 @@ import numpy.typing as npt
 import urllib.request
 from urllib.error import URLError, HTTPError
 
-import llama_cpp.llama_cpp as llama_cpp
-import llama_cpp.llama as llama
+import llama_cpp.llama_cpp as llama_cpp_lib
+import llama_cpp.llama as llama_core
 import llama_cpp.llama_types as llama_types
 import llama_cpp.llama_grammar as llama_grammar
 
@@ -85,7 +85,7 @@ class LlamaChatCompletionHandler(Protocol):
         self,
         *,
         # llama.cpp instance
-        llama: llama.Llama,
+        llama: llama_core.Llama,
         # openai api parameters
         messages: List[llama_types.ChatCompletionRequestMessage],
         functions: Optional[List[llama_types.ChatCompletionFunction]] = None,
@@ -124,8 +124,8 @@ class LlamaChatCompletionHandler(Protocol):
         adaptive_target : float = -1.0,
         adaptive_decay : float = 0.9,
         use_infill: bool = False,
-        logits_processor: Optional[llama.LogitsProcessorList] = None,
-        grammar: Optional[llama.LlamaGrammar] = None,
+        logits_processor: Optional[llama_core.LogitsProcessorList] = None,
+        grammar: Optional[llama_grammar.LlamaGrammar] = None,
         logprobs: Optional[bool] = None,
         top_logprobs: Optional[int] = None,
         **kwargs,  # type: ignore
@@ -199,7 +199,7 @@ class ChatFormatterResponse:
 
     prompt: str
     stop: Optional[Union[str, List[str]]] = None
-    stopping_criteria: Optional[llama.StoppingCriteriaList] = None
+    stopping_criteria: Optional[llama_core.StoppingCriteriaList] = None
     added_special: bool = False
 
 
@@ -281,7 +281,7 @@ class Jinja2ChatFormatter(ChatFormatter):
             ) -> bool:
                 return tokens[-1] in self.stop_token_ids
 
-            stopping_criteria = llama.StoppingCriteriaList([stop_on_last_token])
+            stopping_criteria = llama_core.StoppingCriteriaList([stop_on_last_token])
 
         return ChatFormatterResponse(
             prompt=prompt,
@@ -585,7 +585,7 @@ def chat_formatter_to_chat_completion_handler(
 ) -> LlamaChatCompletionHandler:
     def chat_completion_handler(
         *,
-        llama: llama.Llama,
+        llama: llama_core.Llama,
         messages: List[llama_types.ChatCompletionRequestMessage],
         functions: Optional[List[llama_types.ChatCompletionFunction]] = None,
         function_call: Optional[llama_types.ChatCompletionRequestFunctionCall] = None,
@@ -621,8 +621,8 @@ def chat_formatter_to_chat_completion_handler(
         adaptive_decay : float = 0.9,
         use_infill: bool = False,
         model: Optional[str] = None,
-        logits_processor: Optional[llama.LogitsProcessorList] = None,
-        grammar: Optional[llama.LlamaGrammar] = None,
+        logits_processor: Optional[llama_core.LogitsProcessorList] = None,
+        grammar: Optional[llama_grammar.LlamaGrammar] = None,
         logit_bias: Optional[Dict[str, float]] = None,
         logprobs: Optional[bool] = None,
         top_logprobs: Optional[int] = None,
@@ -1467,7 +1467,7 @@ def format_gemma(
 
 @register_chat_completion_handler("functionary")
 def functionary_chat_handler(
-    llama: llama.Llama,
+    llama: llama_core.Llama,
     messages: List[llama_types.ChatCompletionRequestMessage],
     functions: Optional[List[llama_types.ChatCompletionFunction]] = None,
     function_call: Optional[llama_types.ChatCompletionRequestFunctionCall] = None,
@@ -1500,8 +1500,8 @@ def functionary_chat_handler(
     adaptive_decay : float = 0.9,
     use_infill: bool = False,
     model: Optional[str] = None,
-    logits_processor: Optional[llama.LogitsProcessorList] = None,
-    grammar: Optional[llama.LlamaGrammar] = None,
+    logits_processor: Optional[llama_core.LogitsProcessorList] = None,
+    grammar: Optional[llama_grammar.LlamaGrammar] = None,
     **kwargs,  # type: ignore
 ) -> Union[llama_types.ChatCompletion, Iterator[llama_types.ChatCompletionChunk]]:
     SYSTEM_MESSAGE = """A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions. The assistant calls functions with appropriate input when necessary"""
@@ -1856,7 +1856,7 @@ def functionary_chat_handler(
 @register_chat_completion_handler("functionary-v1")
 @register_chat_completion_handler("functionary-v2")
 def functionary_v1_v2_chat_handler(
-    llama: llama.Llama,
+    llama: llama_core.Llama,
     messages: List[llama_types.ChatCompletionRequestMessage],
     functions: Optional[List[llama_types.ChatCompletionFunction]] = None,
     function_call: Optional[llama_types.ChatCompletionRequestFunctionCall] = None,
@@ -1889,8 +1889,8 @@ def functionary_v1_v2_chat_handler(
     adaptive_decay : float = 0.9,
     use_infill: bool = False,
     model: Optional[str] = None,
-    logits_processor: Optional[llama.LogitsProcessorList] = None,
-    grammar: Optional[llama.LlamaGrammar] = None,
+    logits_processor: Optional[llama_core.LogitsProcessorList] = None,
+    grammar: Optional[llama_grammar.LlamaGrammar] = None,
     **kwargs,  # type: ignore
 ) -> Union[llama_types.ChatCompletion, Iterator[llama_types.ChatCompletionChunk]]:
     SYSTEM_MESSAGE = """A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions. The assistant calls functions with appropriate input when necessary"""
@@ -2868,7 +2868,7 @@ while also answering every question accurately, clearly, and step-by-step when a
 
         self._exit_stack = ExitStack()
 
-    def _init_mtmd_context(self, llama_model: llama.Llama):
+    def _init_mtmd_context(self, llama_model: llama_core.Llama):
         """Initialize mtmd context with the llama model."""
         if self.mtmd_ctx is not None:
             return  # Already initialized
@@ -3047,7 +3047,7 @@ while also answering every question accurately, clearly, and step-by-step when a
 
     def _process_mtmd_prompt(
         self,
-        llama: llama.Llama,
+        llama: llama_core.Llama,
         messages: List[llama_types.ChatCompletionRequestMessage],
     ) -> Tuple[List[int], List[tuple], Any, List[Any]]:
         """
@@ -3212,7 +3212,7 @@ while also answering every question accurately, clearly, and step-by-step when a
     def __call__(
         self,
         *,
-        llama: llama.Llama,
+        llama: llama_core.Llama,
         messages: List[llama_types.ChatCompletionRequestMessage],
         functions: Optional[List[llama_types.ChatCompletionFunction]] = None,
         function_call: Optional[llama_types.ChatCompletionRequestFunctionCall] = None,
@@ -3248,8 +3248,8 @@ while also answering every question accurately, clearly, and step-by-step when a
         adaptive_decay : float = 0.9,
         use_infill: bool = False,
         model: Optional[str] = None,
-        logits_processor: Optional[llama.LogitsProcessorList] = None,
-        grammar: Optional[llama.LlamaGrammar] = None,
+        logits_processor: Optional[llama_core.LogitsProcessorList] = None,
+        grammar: Optional[llama_grammar.LlamaGrammar] = None,
         logit_bias: Optional[Dict[str, float]] = None,
         logprobs: Optional[bool] = None,
         top_logprobs: Optional[int] = None,
@@ -3367,13 +3367,13 @@ while also answering every question accurately, clearly, and step-by-step when a
                             llama.n_tokens = n_past
 
                     # Execute C++ Multimodal Black-box Extraction
-                    new_n_past = llama_cpp.llama_pos(0)
+                    new_n_past = llama_cpp_lib.llama_pos(0)
                     result = self._mtmd_cpp.mtmd_helper_eval_chunk_single(
                         self.mtmd_ctx,
                         llama._ctx.ctx,
                         chunk_ptr,
-                        llama_cpp.llama_pos(n_past),
-                        llama_cpp.llama_seq_id(0),
+                        llama_cpp_lib.llama_pos(n_past),
+                        llama_cpp_lib.llama_seq_id(0),
                         llama.n_batch,
                         True, # logits_last = True, drastically saves computational overhead
                         ctypes.byref(new_n_past)
@@ -5022,7 +5022,7 @@ class Qwen35ChatHandler(MTMDChatHandler):
 
 @register_chat_completion_handler("chatml-function-calling")
 def chatml_function_calling(
-    llama: llama.Llama,
+    llama: llama_core.Llama,
     messages: List[llama_types.ChatCompletionRequestMessage],
     functions: Optional[List[llama_types.ChatCompletionFunction]] = None,
     function_call: Optional[llama_types.ChatCompletionRequestFunctionCall] = None,
@@ -5055,8 +5055,8 @@ def chatml_function_calling(
     adaptive_decay : float = 0.9,
     use_infill: bool = False,
     model: Optional[str] = None,
-    logits_processor: Optional[llama.LogitsProcessorList] = None,
-    grammar: Optional[llama.LlamaGrammar] = None,
+    logits_processor: Optional[llama_core.LogitsProcessorList] = None,
+    grammar: Optional[llama_grammar.LlamaGrammar] = None,
     logprobs: Optional[bool] = None,
     top_logprobs: Optional[int] = None,
     **kwargs,  # type: ignore
