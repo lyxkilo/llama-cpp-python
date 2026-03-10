@@ -53,57 +53,68 @@ class BaseLlamaCache(ABC):
 
 
 class LlamaDiskCache(BaseLlamaCache):
-    """Cache for a llama.cpp model using disk."""
+    """
+    Disk cache for a llama.cpp model.
+    Delegates LRU and size management natively to the SQLite-backed `diskcache` library.
+    """
 
     def __init__(
         self, cache_dir: str = ".cache/llama_cache", capacity_bytes: int = (2 << 30)
     ):
         super().__init__(capacity_bytes)
-        self.cache = diskcache.Cache(cache_dir)
+        self.cache_dir = cache_dir
+        # Native SQLite size limit and LRU eviction
+        self.cache = diskcache.Cache(cache_dir, size_limit=capacity_bytes)
 
     @property
     def cache_size(self):
-        return int(self.cache.volume())  # type: ignore
+        # Native O(1) volume calculation
+        return self.cache.volume()  # type: ignore
 
     def _find_longest_prefix_key(
         self,
         key: Tuple[int, ...],
     ) -> Optional[Tuple[int, ...]]:
+        # Early exit if cache is empty
+        if len(self.cache) == 0:
+            return None
+
         min_len = 0
         min_key: Optional[Tuple[int, ...]] = None
+        target_len = len(key)
         for k in self.cache.iterkeys():  # type: ignore
             prefix_len = llama_core.Llama.longest_token_prefix(k, key)
             if prefix_len > min_len:
                 min_len = prefix_len
                 min_key = k  # type: ignore
+            # Perfect match found, break to prevent full-table disk scan
+            if min_len == target_len:
+                break
+
         return min_key
 
     def __getitem__(self, key: Sequence[int]) -> "llama_core.LlamaState":
+        print("LlamaDiskCache.__getitem__: called", file=sys.stderr)
+        if len(self.cache) == 0:
+            raise KeyError("Cache is empty")
+
         key = tuple(key)
         _key = self._find_longest_prefix_key(key)
         if _key is None:
             raise KeyError("Key not found")
-        value: "llama_core.LlamaState" = self.cache.pop(_key)  # type: ignore
-        # NOTE: This puts an integer as key in cache, which breaks,
-        # Llama.longest_token_prefix(k, key) above since k is not a tuple of ints/tokens
-        # self.cache.push(_key, side="front")  # type: ignore
+        # Non-destructive read: automatically updates access time for LRU
+        value: "llama_core.LlamaState" = self.cache[_key]  # type: ignore
         return value
 
     def __contains__(self, key: Sequence[int]) -> bool:
+        if len(self.cache) == 0:
+            return False
         return self._find_longest_prefix_key(tuple(key)) is not None
 
     def __setitem__(self, key: Sequence[int], value: "llama_core.LlamaState"):
         print("LlamaDiskCache.__setitem__: called", file=sys.stderr)
-        key = tuple(key)
-        if key in self.cache:
-            print("LlamaDiskCache.__setitem__: delete", file=sys.stderr)
-            del self.cache[key]
-        self.cache[key] = value
-        print("LlamaDiskCache.__setitem__: set", file=sys.stderr)
-        while self.cache_size > self.capacity_bytes and len(self.cache) > 0:
-            key_to_remove = next(iter(self.cache))
-            del self.cache[key_to_remove]
-        print("LlamaDiskCache.__setitem__: trim", file=sys.stderr)
+        # diskcache natively handles capacity check and eviction upon assignment
+        self.cache[tuple(key)] = value
 
 
 class LlamaRAMCache(BaseLlamaCache):
