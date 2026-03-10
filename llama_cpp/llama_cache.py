@@ -107,7 +107,10 @@ class LlamaDiskCache(BaseLlamaCache):
 
 
 class LlamaRAMCache(BaseLlamaCache):
-    """Cache for a llama.cpp model using RAM."""
+    """
+    RAM cache for a llama.cpp model.
+    Maintains an LRU eviction policy with O(1) size tracking.
+    """
 
     def __init__(self, capacity_bytes: int = (2 << 30)):
         super().__init__(capacity_bytes)
@@ -115,10 +118,11 @@ class LlamaRAMCache(BaseLlamaCache):
         self.cache_state: OrderedDict[
             Tuple[int, ...], "llama_core.LlamaState"
         ] = OrderedDict()
+        self._current_size = 0
 
     @property
     def cache_size(self):
-        return sum([state.llama_state_size for state in self.cache_state.values()])
+        return self._current_size
 
     def _find_longest_prefix_key(
         self,
@@ -137,6 +141,9 @@ class LlamaRAMCache(BaseLlamaCache):
         return min_key
 
     def __getitem__(self, key: Sequence[int]) -> "llama_core.LlamaState":
+        if not self.cache_state:
+            raise KeyError("Cache is empty")
+
         key = tuple(key)
         _key = self._find_longest_prefix_key(key)
         if _key is None:
@@ -146,15 +153,26 @@ class LlamaRAMCache(BaseLlamaCache):
         return value
 
     def __contains__(self, key: Sequence[int]) -> bool:
+        if not self.cache_state:
+            return False
+
         return self._find_longest_prefix_key(tuple(key)) is not None
 
     def __setitem__(self, key: Sequence[int], value: "llama_core.LlamaState"):
         key = tuple(key)
         if key in self.cache_state:
             del self.cache_state[key]
+
         self.cache_state[key] = value
-        while self.cache_size > self.capacity_bytes and len(self.cache_state) > 0:
-            self.cache_state.popitem(last=False)
+        self._current_size += value.llama_state_size
+
+        while self._current_size > self.capacity_bytes and len(self.cache_state) > 0:
+            _, popped_state = self.cache_state.popitem(last=False)
+            self._current_size -= popped_state.llama_state_size
+            self._current_size = max(0, self._current_size)
+
+        if len(self.cache_state) == 0:
+            self._current_size = 0
 
 
 class TrieNode:
@@ -316,7 +334,7 @@ class LlamaTrieCache(BaseLlamaCache):
             self._prune(evicted_key)
 
 # Alias for backwards compatibility
-LlamaCache = LlamaRAMCache
+LlamaCache = LlamaTrieCache
 
 
 @dataclass
