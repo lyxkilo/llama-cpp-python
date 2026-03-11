@@ -3049,6 +3049,10 @@ while also answering every question accurately, clearly, and step-by-step when a
         self,
         llama: llama_core.Llama,
         messages: List[llama_types.ChatCompletionRequestMessage],
+        functions: Optional[List[llama_types.ChatCompletionFunction]] = None,
+        function_call: Optional[llama_types.ChatCompletionRequestFunctionCall] = None,
+        tools: Optional[List[llama_types.ChatCompletionTool]] = None,
+        tool_choice: Optional[llama_types.ChatCompletionToolChoiceOption] = None,
     ) -> Tuple[List[int], List[tuple], Any, List[Any]]:
         """
         Core multimodal preprocessing pipeline.
@@ -3079,6 +3083,10 @@ while also answering every question accurately, clearly, and step-by-step when a
             add_generation_prompt=True,
             eos_token=self.mtmd_eos_token,
             bos_token=self.mtmd_bos_token,
+            functions=functions,
+            function_call=function_call,
+            tools=tools,
+            tool_choice=tool_choice,
             **getattr(self, 'extra_template_arguments', {})
         )
         # Replace image_url by media_marker in text
@@ -3263,7 +3271,14 @@ while also answering every question accurately, clearly, and step-by-step when a
         assert self.mtmd_ctx is not None
 
         # 2. Concurrent Preprocessing & Ledger Construction
-        full_prompt_ids, chunk_token_spans, chunks, bitmap_cleanup = self._process_mtmd_prompt(llama, messages)
+        full_prompt_ids, chunk_token_spans, chunks, bitmap_cleanup = self._process_mtmd_prompt(
+            llama=llama,
+            messages=messages,
+            functions=functions,
+            function_call=function_call,
+            tools=tools,
+            tool_choice=tool_choice
+        )
 
         if self.verbose:
             print(f"{self.log_prefix}(__call__): Prepared virtual token ledger of length {len(full_prompt_ids)}.", file=sys.stderr)
