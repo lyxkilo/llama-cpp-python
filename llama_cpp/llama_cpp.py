@@ -348,6 +348,7 @@ LLAMA_TOKEN_ATTR_SINGLE_WORD = 1 << 9
 #     LLAMA_FTYPE_MOSTLY_TQ1_0         = 36, // except 1d tensors
 #     LLAMA_FTYPE_MOSTLY_TQ2_0         = 37, // except 1d tensors
 #     LLAMA_FTYPE_MOSTLY_MXFP4_MOE     = 38, // except 1d tensors
+#     LLAMA_FTYPE_MOSTLY_NVFP4         = 39, // except 1d tensors
 #
 #     LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
 # };
@@ -387,6 +388,7 @@ LLAMA_FTYPE_MOSTLY_BF16 = 32
 LLAMA_FTYPE_MOSTLY_TQ1_0 = 36
 LLAMA_FTYPE_MOSTLY_TQ2_0 = 37
 LLAMA_FTYPE_MOSTLY_MXFP4_MOE = 38
+LLAMA_FTYPE_MOSTLY_NVFP4 = 39
 LLAMA_FTYPE_GUESSED = 1024
 
 # enum llama_rope_scaling_type {
