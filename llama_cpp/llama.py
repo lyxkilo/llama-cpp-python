@@ -1167,12 +1167,41 @@ class Llama:
             ...     print(llama.detokenize([token]))
 
         Args:
-            tokens: The prompt tokens.
-            top_k: The top-k sampling parameter.
-            top_p: The top-p sampling parameter.
-            temp: The temperature parameter.
-            repeat_penalty: The repeat penalty parameter.
-            reset: Whether to reset the model state.
+            tokens: The prompt tokens to evaluate.
+            top_k: Limit the next token selection to the K most probable tokens. (<=0 to use vocab size)
+            top_p: Nucleus sampling. Limits selection to a cumulative probability of P.
+            min_p: Minimum P sampling. Drops tokens with a probability less than min_p relative to the most likely token.
+            typical_p: Locally typical sampling. (1.0 = disabled)
+            temp: Temperature. Controls randomness. (<=0.0 greedy, 0.0 no probabilities)
+            dynatemp_range: Range of dynamic temperature.
+            dynatemp_exponent: Exponent of dynamic temperature.
+            top_n_sigma: Limit selection to tokens within n * sigma of the max logit. (-1.0 = disabled)
+            min_keep: Minimum tokens to keep for sampling.
+            penalty_last_n: Last n tokens to penalize (0 = disable penalty, -1 = context size).
+            repeat_penalty: General penalty for repeated tokens. (1.0 = disabled)
+            frequency_penalty: Penalty based on the absolute frequency of a token in the prompt.
+            present_penalty: Flat penalty applied if a token is present anywhere in the context.
+            reset: If True, attempts to automatically match the KV cache prefix to avoid re-evaluation. If False, blindly appends tokens to existing context.
+            mirostat_mode: Mirostat sampling mode (0 = disabled, 1 = Mirostat, 2 = Mirostat 2.0).
+            mirostat_tau: Target cross-entropy (surprisal) for Mirostat.
+            mirostat_eta: Learning rate for Mirostat.
+            xtc_threshold: Minimum probability threshold for XTC token removal.
+            xtc_probability: Chance for token removal in XTC sampling.
+            dry_multiplier: DRY (Don't Repeat Yourself) repetition penalty multiplier (0.0 = disabled).
+            dry_base: DRY repetition penalty base value.
+            dry_allowed_length: DRY maximum allowed sequence length without penalty.
+            dry_penalty_last_n: DRY tokens to scan for repetitions (0 = disabled, -1 = context size).
+            dry_seq_breakers: Array of sequence breakers for DRY sampling.
+            adaptive_target: Adaptive-p target probability (0.0 to 1.0, negative = disabled).
+            adaptive_decay: Adaptive-p decay rate (0.0 to 0.99).
+            use_infill: Activate specialized fill-in-the-middle sampler.
+            ignore_eos: If True, ignore the End-of-Sequence token.
+            logit_bias: Dictionary mapping token IDs to their bias values.
+            logits_processor: List of custom Python callbacks to modify logits in-place.
+            stopping_criteria: List of custom callbacks to halt generation dynamically.
+            grammar: Optional BNF-like grammar (GBNF) to constrain sampling syntax.
+            grammar_lazy: If True, activates grammar constraints only on specific trigger tokens.
+            seed: RNG seed for sampling. Overrides the instance seed.
 
         Yields:
             The generated tokens.
@@ -1259,12 +1288,14 @@ class Llama:
                                     f"remaining {len(tokens)} prompt tokens to eval",
                                     file=sys.stderr,
                                 )
-        else:
+        if reset:
             # No prefix matched at all. Completely clear the KV cache to prevent context poisoning.
             self.n_tokens = 0
             self._ctx.memory_clear(True)
             if self.is_hybrid and self._hybrid_cache_mgr is not None:
                 self._hybrid_cache_mgr.clear()
+            if self.verbose:
+                print("Llama.generate: Context reset requested or no prefix match. Cleared KV cache.", file=sys.stderr)
 
         # Reset mirostat sampling
         params = LlamaSamplingParams(
@@ -1315,6 +1346,7 @@ class Llama:
             seed=seed if seed is not None else self._seed,
         )
 
+        # Register custom python-level logits processors if provided
         if logits_processor:
             def adapter(token_data_array: llama_cpp.llama_token_data_array):
                 if self._logits_all:
@@ -1336,6 +1368,7 @@ class Llama:
             if CommonSamplerType.CUSTOM not in params.samplers:
                 params.samplers.insert(3, CommonSamplerType.CUSTOM)
 
+        # Free previous sampling context to prevent memory leaks
         if getattr(self, "_sampling_ctx", None) is not None:
             self._sampling_ctx.close()
             self._sampling_ctx = None
@@ -1345,7 +1378,7 @@ class Llama:
         sample_idx = self.n_tokens + len(tokens) - 1
         tokens = list(tokens)
 
-        # Eval and sample
+        # Main evaluation and generation loop
         try:
             while True:
                 if len(tokens) > 0:
@@ -1376,12 +1409,15 @@ class Llama:
                     else:
                         # Standard evaluation or single-token generation step
                         self.eval(tokens)
+
+                # Sample loop
                 while sample_idx < self.n_tokens:
                     token = self._sampling_ctx.sample(self._ctx, idx=-1)
                     self._sampling_ctx.accept(token, False if grammar is None else True)
 
                     sample_idx += 1
 
+                    # Halt generation if custom stopping criteria are met
                     if stopping_criteria is not None:
                         if self._logits_all:
                             logits_idx = sample_idx - self.n_tokens
@@ -1399,13 +1435,17 @@ class Llama:
                         ):
                             return
 
+                    # Yield the generated token to the caller
                     tokens_or_none = yield token
+
                     tokens.clear()
                     tokens.append(token)
 
                     if tokens_or_none is not None:
                         tokens.extend(tokens_or_none)
 
+                    # Rollback Check: A previously evaluated token (e.g. from speculative decoding)
+                    # mismatched the newly sampled token. We must rollback the KV cache.
                     if sample_idx < self.n_tokens and token != self._input_ids[sample_idx]:
                         self.n_tokens = sample_idx
                         if self.is_hybrid:
@@ -1420,10 +1460,13 @@ class Llama:
                                     self._ctx.memory_clear(True)
                                     self.n_tokens = 0
                         else:
+                            if self.verbose:
+                                print(f"Llama.generate: Draft token rejected. Truncating context to {self.n_tokens}.", file=sys.stderr)
                             self._ctx.memory_seq_rm(0, self.n_tokens, -1)
 
                         break
 
+                # Speculative Decoding (Draft Model) logic
                 if self.draft_model is not None:
                     if self.is_hybrid:
                         if self.verbose:
@@ -1439,6 +1482,7 @@ class Llama:
                             ]
                         )
         finally:
+            # Ensure the final state is checkpointed for hybrid models when generation finishes or is interrupted
             if (
                 self.is_hybrid
                 and self._hybrid_cache_mgr is not None
